@@ -7,10 +7,6 @@ on:
         description: 'لینک صفحه وب'
         required: true
         type: string
-      search_name:
-        description: 'اسم جستجو (برای نام عکس)'
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -36,12 +32,14 @@ jobs:
       - name: Take screenshot
         run: |
           URL="${{ github.event.inputs.page_url }}"
-          NAME="${{ github.event.inputs.search_name }}"
           
           mkdir -p webresult
-          SAFE_NAME=$(echo "$NAME" | sed 's/[^a-zA-Z0-9\-_]//g' | sed 's/ /_/g')
+          
+          # تبدیل لینک به اسم فایل معتبر
+          SAFE_NAME=$(echo "$URL" | sed -E 's|https?://||' | sed 's|/|_|g' | sed 's|?|_|g' | sed 's|=|_|g' | sed 's/[^a-zA-Z0-9\-_]//g' | cut -c1-200)
           
           echo "🌐 در حال گرفتن عکس از: $URL"
+          echo "📁 نام فایل: ${SAFE_NAME}.png"
           
           python3 << EOF
           from playwright.sync_api import sync_playwright
