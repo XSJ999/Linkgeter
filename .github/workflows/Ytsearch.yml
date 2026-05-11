@@ -48,8 +48,8 @@ jobs:
           COUNT="${{ github.event.inputs.video_count }}"
           SORT="${{ github.event.inputs.sort_by }}"
           
-          # ساخت پوشه YT_Results (بدون فاصله)
-          OUTPUT_DIR="YT_Results"
+          # ساخت پوشه YtResults
+          OUTPUT_DIR="YtResults"
           mkdir -p "$OUTPUT_DIR"
           
           # تبدیل فاصله به فاصله معمولی
@@ -116,6 +116,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add YT_Results/
+          git add YtResults/
           git commit -m "Add YouTube search results [skip ci]" || echo "Nothing to commit"
           git push
