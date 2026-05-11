@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: 'کلمه یا جمله مورد نظر برای جستجو (مثل: Lana)'
+        description: 'کلمه یا جمله مورد نظر برای جستجو'
         required: true
         type: string
       video_count:
@@ -48,11 +48,11 @@ jobs:
           COUNT="${{ github.event.inputs.video_count }}"
           SORT="${{ github.event.inputs.sort_by }}"
           
-          # ساخت پوشه PhResults
+          # ساخت پوشه
           OUTPUT_DIR="PhResults"
           mkdir -p "$OUTPUT_DIR"
           
-          # اسم فایل خروجی (حذف کاراکترهای خاص)
+          # اسم فایل امن
           SAFE_NAME=$(echo "$SEARCH" | sed 's/[^a-zA-Z0-9\-_]//g' | sed 's/ /_/g' | tr '[:upper:]' '[:lower:]')
           
           echo "🔍 در حال جستجوی '$SEARCH' در Pornhub..."
@@ -67,59 +67,53 @@ jobs:
             echo "# تعداد درخواستی: ${COUNT}"
             echo "# تاریخ: $(date '+%Y-%m-%d %H:%M:%S')"
             echo ""
-            echo "لینک | عنوان ویدیو | کانال | بازدیدها | مدت زمان"
-            echo "-----|------------|------|---------|-----------"
+            echo "لینک | عنوان ویدیو | آپلودر | بازدیدها | مدت زمان"
+            echo "-----|------------|--------|---------|-----------"
           } > "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt"
           
-          # ساخت URL جستجو در Pornhub
+          # ساخت URL جستجو
           SEARCH_URL="https://www.pornhub.com/video/search?search=$(echo "$SEARCH" | sed 's/ /+/g')"
           
-          # اضافه کردن پارامترهای مرتب‌سازی
           case "$SORT" in
-            "date (جدیدترین)")
-              SEARCH_URL="${SEARCH_URL}&o=cm"   # newest
-              ;;
-            "views (پربازدیدترین)")
-              SEARCH_URL="${SEARCH_URL}&o=mv"   # most viewed
-              ;;
-            "rating (امتیاز)")
-              SEARCH_URL="${SEARCH_URL}&o=tr"   # top rated
-              ;;
-            *)
-              # relevance (default)
-              ;;
+            "date (جدیدترین)")      SEARCH_URL="${SEARCH_URL}&o=cm" ;;
+            "views (پربازدیدترین)") SEARCH_URL="${SEARCH_URL}&o=mv" ;;
+            "rating (امتیاز)")      SEARCH_URL="${SEARCH_URL}&o=tr" ;;
+            *) ;;
           esac
           
           echo "🔗 آدرس جستجو: $SEARCH_URL"
           
-          # استخراج اطلاعات ویدیوها
+          # استخراج اطلاعات
           yt-dlp \
             --flat-playlist \
             --print "%(webpage_url)s | %(title)s | %(uploader)s | %(view_count)s | %(duration_string)s" \
             --playlist-items "1-$COUNT" \
-            "$SEARCH_URL" >> "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt" 2>&1 || echo "خطا در استخراج برخی ویدیوها"
+            "$SEARCH_URL" >> "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt" 2>&1 || echo "⚠️ برخی ویدیوها استخراج نشدند"
           
-          # نمایش تعداد لینک‌های گرفته شده
           LINK_COUNT=$(grep -c "https://www.pornhub.com" "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt" 2>/dev/null || echo 0)
           
           if [ "$LINK_COUNT" -eq 0 ]; then
-            echo "⚠️ هیچ ویدیویی پیدا نشد! (ممکن است محدودیت Pornhub یا نیاز به پروکسی باشد)"
+            echo "⚠️ هیچ ویدیویی پیدا نشد!"
           else
             echo "✅ ${LINK_COUNT} لینک ویدیو استخراج شد"
           fi
           
-          echo "📁 فایل در مسیر ${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt ذخیره شد"
-          
-          # نمایش محتوای فایل برای دیباگ
-          echo ""
-          echo "===== محتوای فایل ====="
-          cat "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt"
+          echo "📁 فایل ذخیره شد: ${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt"
 
       - name: Push changes to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add PhResults/
-          git commit -m "Add Pornhub search results [skip ci]" || echo "Nothing to commit"
-          git push.
-
+          
+          git add PhResults/ || true
+          
+          if git diff --staged --quiet; then
+            echo "ℹ️ هیچ تغییری برای کامیت وجود ندارد"
+          else
+            git commit -m "Add Pornhub search results for '${{ github.event.inputs.search_query }}' [skip ci]"
+            echo "✅ تغییرات کامیت شد"
+          fi
+          
+          # Push امن
+          git pull --rebase origin ${{ github.ref }} || true
+          git push || echo "⚠️ Push انجام نشد (احتمالاً تغییری وجود نداشته)"
