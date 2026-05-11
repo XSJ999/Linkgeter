@@ -1,4 +1,4 @@
-name: PH Search
+name: PH SEARCH
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ permissions:
   contents: write
 
 jobs:
-  search-ali:
+  search-pornhub:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -42,80 +42,84 @@ jobs:
         run: |
           pip install -q -U yt-dlp
 
-      - name: Search PH and extract links with details
+      - name: Search Pornhub and extract links with details
         run: |
           SEARCH="${{ github.event.inputs.search_query }}"
           COUNT="${{ github.event.inputs.video_count }}"
           SORT="${{ github.event.inputs.sort_by }}"
           
-          # ساخت پوشه Phsearch
-          OUTPUT_DIR="Phsearch"
+          # ساخت پوشه PhResults
+          OUTPUT_DIR="PhResults"
           mkdir -p "$OUTPUT_DIR"
           
-          # تبدیل فاصله به فاصله معمولی
-          SEARCH_CLEAN=$(echo "$SEARCH" | sed 's/ / /g')
-          
           # اسم فایل خروجی (حذف کاراکترهای خاص)
-          SAFE_NAME=$(echo "$SEARCH" | sed 's/[^a-zA-Z0-9\-_]//g' | sed 's/ /_/g')
+          SAFE_NAME=$(echo "$SEARCH" | sed 's/[^a-zA-Z0-9\-_]//g' | sed 's/ /_/g' | tr '[:upper:]' '[:lower:]')
           
-          # انتخاب نوع جستجو بر اساس مرتب‌سازی برای PH
-          case "$SORT" in
-            "date (جدیدترین)")
-              SEARCH_TYPE="pornhubsearchdate"
-              ;;
-            "views (پربازدیدترین)")
-              SEARCH_TYPE="pornhubsearchviews"
-              ;;
-            "rating (امتیاز)")
-              SEARCH_TYPE="pornhubsearchrating"
-              ;;
-            *)
-              SEARCH_TYPE="pornhubsearch"
-              ;;
-          esac
-          
-          echo "🔍 در حال جستجوی '$SEARCH_CLEAN' در PH..."
+          echo "🔍 در حال جستجوی '$SEARCH' در Pornhub..."
           echo "🎯 مرتب‌سازی: $SORT"
           echo "📊 تعداد: $COUNT ویدیو"
           
           # ایجاد فایل با هدر
           {
-            echo "# نتایج جستجوی PhHub"
-            echo "# کلمه جستجو: ${SEARCH_CLEAN}"
+            echo "# نتایج جستجوی Pornhub"
+            echo "# کلمه جستجو: ${SEARCH}"
             echo "# مرتب‌سازی: ${SORT}"
             echo "# تعداد درخواستی: ${COUNT}"
             echo "# تاریخ: $(date '+%Y-%m-%d %H:%M:%S')"
             echo ""
             echo "لینک | عنوان ویدیو | کانال | بازدیدها | مدت زمان"
             echo "-----|------------|------|---------|-----------"
-          } > "${OUTPUT_DIR}/Phsearch_${SAFE_NAME}.txt"
+          } > "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt"
           
-          # استخراج اطلاعات ویدیوها با PHsearch
+          # ساخت URL جستجو در Pornhub
+          SEARCH_URL="https://www.pornhub.com/video/search?search=$(echo "$SEARCH" | sed 's/ /+/g')"
+          
+          # اضافه کردن پارامترهای مرتب‌سازی
+          case "$SORT" in
+            "date (جدیدترین)")
+              SEARCH_URL="${SEARCH_URL}&o=cm"   # newest
+              ;;
+            "views (پربازدیدترین)")
+              SEARCH_URL="${SEARCH_URL}&o=mv"   # most viewed
+              ;;
+            "rating (امتیاز)")
+              SEARCH_URL="${SEARCH_URL}&o=tr"   # top rated
+              ;;
+            *)
+              # relevance (default)
+              ;;
+          esac
+          
+          echo "🔗 آدرس جستجو: $SEARCH_URL"
+          
+          # استخراج اطلاعات ویدیوها
           yt-dlp \
             --flat-playlist \
             --print "%(webpage_url)s | %(title)s | %(uploader)s | %(view_count)s | %(duration_string)s" \
-            "${SEARCH_TYPE}${COUNT}:${SEARCH_CLEAN}" >> "${OUTPUT_DIR}/Phsearch_${SAFE_NAME}.txt" 2>&1
+            --playlist-items "1-$COUNT" \
+            "$SEARCH_URL" >> "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt" 2>&1 || echo "خطا در استخراج برخی ویدیوها"
           
           # نمایش تعداد لینک‌های گرفته شده
-          LINK_COUNT=$(grep -c "https://" "${OUTPUT_DIR}/Phsearch_${SAFE_NAME}.txt" 2>/dev/null || echo 0)
+          LINK_COUNT=$(grep -c "https://www.pornhub.com" "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt" 2>/dev/null || echo 0)
           
           if [ "$LINK_COUNT" -eq 0 ]; then
-            echo "⚠️ هیچ ویدیویی پیدا نشد!"
+            echo "⚠️ هیچ ویدیویی پیدا نشد! (ممکن است محدودیت Pornhub یا نیاز به پروکسی باشد)"
           else
             echo "✅ ${LINK_COUNT} لینک ویدیو استخراج شد"
           fi
           
-          echo "📁 فایل در مسیر ${OUTPUT_DIR}/Phsearch${SAFE_NAME}.txt ذخیره شد"
+          echo "📁 فایل در مسیر ${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt ذخیره شد"
           
           # نمایش محتوای فایل برای دیباگ
           echo ""
           echo "===== محتوای فایل ====="
-          cat "${OUTPUT_DIR}/Phsearch${SAFE_NAME}.txt"
+          cat "${OUTPUT_DIR}/pornhub_${SAFE_NAME}.txt"
 
       - name: Push changes to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Phsearch/
-          git commit -m "Add Phsearch search results [skip ci]" || echo "Nothing to commit"
-          git push
+          git add PhResults/
+          git commit -m "Add Pornhub search results [skip ci]" || echo "Nothing to commit"
+          git push.
+
