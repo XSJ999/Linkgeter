@@ -1,100 +1,43 @@
-name: دانلود کامل صفحه وب
+name: عکس از صفحه وب (سریع)
 
 on:
   workflow_dispatch:
     inputs:
       page_url:
-        description: 'لینک صفحه وب (مثل https://example.com)'
+        description: 'لینک صفحه وب'
+        required: true
+        type: string
+      search_name:
+        description: 'اسم جستجو'
         required: true
         type: string
 
-permissions:
-  contents: write
-
 jobs:
-  download-page:
+  screenshot:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: Clone repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
 
-      - name: Install wget and dependencies
+      - name: Install cutycapt
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y wget
+          sudo apt-get update
+          sudo apt-get install -y cutycapt xvfb
 
-      - name: Download complete webpage
+      - name: Take screenshot
         run: |
           URL="${{ github.event.inputs.page_url }}"
+          NAME="${{ github.event.inputs.search_name }}"
           
-          # ساخت پوشه صفحات وب
-          OUTPUT_DIR="Saved_Webpages"
-          mkdir -p "$OUTPUT_DIR"
+          mkdir -p webresult
+          SAFE_NAME=$(echo "$NAME" | tr ' ' '_' | sed 's/[^a-zA-Z0-9_-]//g')
           
-          # استخراج نام دامنه برای نام پوشه
-          DOMAIN=$(echo "$URL" | sed -E 's|https?://||' | sed -E 's|/.*||' | sed -E 's|www\.||')
-          PAGE_NAME=$(echo "$URL" | sed -E 's|https?://[^/]+/||' | sed 's|/|_|g' | sed 's|?|_|g')
-          if [ -z "$PAGE_NAME" ]; then
-            PAGE_NAME="index"
-          fi
+          xvfb-run cutycapt --url="$URL" --out="webresult/${SAFE_NAME}.png"
           
-          # پوشه مخصوص این صفحه
-          PAGE_FOLDER="${OUTPUT_DIR}/${DOMAIN}_${PAGE_NAME}"
-          mkdir -p "$PAGE_FOLDER"
-          
-          echo "🌐 در حال دانلود صفحه: $URL"
-          echo "📁 ذخیره در: $PAGE_FOLDER"
-          
-          # دانلود کامل صفحه با همه منابع (CSS, JS, Images)
-          wget \
-            --recursive \
-            --page-requisites \
-            --html-extension \
-            --convert-links \
-            --restrict-file-names=windows \
-            --domains "$DOMAIN" \
-            --no-parent \
-            --directory-prefix="$PAGE_FOLDER" \
-            --execute robots=off \
-            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            "$URL"
-          
-          # پیدا کردن فایل HTML اصلی
-          MAIN_HTML=$(find "$PAGE_FOLDER" -name "*.html" | head -1)
-          
-          if [ -n "$MAIN_HTML" ]; then
-            echo "✅ صفحه با موفقیت دانلود شد!"
-            echo "📄 فایل اصلی: $MAIN_HTML"
-            
-            # کپی فایل اصلی به ریشه پوشه با اسم مشخص
-            cp "$MAIN_HTML" "$PAGE_FOLDER/index.html"
-            
-            # نمایش اطلاعات
-            echo ""
-            echo "===== اطلاعات دانلود ====="
-            echo "تعداد فایل‌ها: $(find "$PAGE_FOLDER" -type f | wc -l)"
-            echo "حجم کل: $(du -sh "$PAGE_FOLDER" | cut -f1)"
-          else
-            echo "❌ خطا در دانلود صفحه!"
-            exit 1
-          fi
+          echo "✅ عکس ذخیره شد: webresult/${SAFE_NAME}.png"
 
-      - name: Create zip archive for easy download
-        run: |
-          cd Saved_Webpages
-          zip -r "../Webpage_Backup.zip" .
-          cd ..
-          echo "✅ فایل فشرده ساخته شد: Webpage_Backup.zip"
-
-      - name: Push to repository
+      - name: Push
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Saved_Webpages/ Webpage_Backup.zip
-          git commit -m "Download webpage [skip ci]" || echo "Nothing to commit"
+          git add webresult/
+          git commit -m "Add screenshot" || echo "Nothing to commit"
           git push
