@@ -13,27 +13,59 @@ on:
         type: number
         default: 10
 
+permissions:
+  contents: write
+
 jobs:
   get-links:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: نصب yt-dlp
-        run: pip install yt-dlp
-      
-      - name: گرفتن لینک‌ها
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install yt-dlp
         run: |
-          USER="${{ github.event.inputs.username }}"
-          USER=$(echo "$USER" | sed 's/@//g')
+          pip install -q -U yt-dlp
+
+      - name: Extract TikTok video links
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
           COUNT="${{ github.event.inputs.count }}"
-          mkdir -p links
-          yt-dlp --flat-playlist --print "%(webpage_url)s" --playlist-end "$COUNT" "https://www.tiktok.com/@${USER}" > "links/${USER}.txt"
-      
-      - name: ذخیره در ریپو
+          
+          # حذف @ از اول اسم اگه باشه
+          USERNAME_CLEAN=$(echo "$USERNAME" | sed 's/^@//')
+          
+          # ساخت پوشه links
+          OUTPUT_DIR="links"
+          mkdir -p "$OUTPUT_DIR"
+          
+          # ساخت لینک کامل پروفایل
+          PROFILE_URL="https://www.tiktok.com/@${USERNAME_CLEAN}"
+          
+          echo "در حال گرفتن لینک ویدیوهای ${USERNAME_CLEAN}..."
+          
+          # استخراج لینک ویدیوها با yt-dlp
+          yt-dlp \
+            --flat-playlist \
+            --print "%(webpage_url)s" \
+            --playlist-end "${COUNT}" \
+            "$PROFILE_URL" > "${OUTPUT_DIR}/${USERNAME_CLEAN}.txt"
+          
+          # نمایش تعداد لینک‌های گرفته شده
+          LINK_COUNT=$(wc -l < "${OUTPUT_DIR}/${USERNAME_CLEAN}.txt")
+          echo "✅ ${LINK_COUNT} لینک ویدیو استخراج شد"
+          
+          echo "📁 فایل در مسیر ${OUTPUT_DIR}/${USERNAME_CLEAN}.txt ذخیره شد"
+
+      - name: Push changes to repository
         run: |
-          git config user.name "bot"
-          git config user.email "bot@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add links/
-          git commit -m "add tiktok links" || echo "ok"
+          git commit -m "Download media [skip ci]" || echo "Nothing to commit"
           git push
