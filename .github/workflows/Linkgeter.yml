@@ -1,4 +1,4 @@
-name: استخراج لینک تیک‌تاک
+name: TikTok link
 
 on:
   workflow_dispatch:
