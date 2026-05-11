@@ -1,27 +1,13 @@
+
 name: TikTok link
 
 on:
   workflow_dispatch:
     inputs:
-      search_type:
-        description: 'نوع جستجو'
-        required: true
-        type: choice
-        options:
-          - by_profile (جستجو با اسم پیج)
-          - by_keyword (جستجو با کلمه کلیدی یا هشتگ)
-        default: 'by_profile (جستجو با اسم پیج)'
-      
       username:
-        description: 'اسم پیج تیک‌تاک (مثل: cristiano) - در صورت انتخاب جستجو با پیج'
-        required: false
+        description: 'اسم پیج تیک‌تاک'
+        required: true
         type: string
-      
-      search_query:
-        description: 'متن جستجو (کلمه کلیدی یا هشتگ مثل: funny یا #music) - در صورت انتخاب جستجو با کلمه'
-        required: false
-        type: string
-      
       count:
         description: 'تعداد ویدیو'
         required: false
@@ -49,74 +35,38 @@ jobs:
 
       - name: Extract TikTok video links
         run: |
-          SEARCH_TYPE="${{ github.event.inputs.search_type }}"
+          USERNAME="${{ github.event.inputs.username }}"
           COUNT="${{ github.event.inputs.count }}"
+          
+          # حذف @ از اول اسم اگه باشه
+          USERNAME_CLEAN=$(echo "$USERNAME" | sed 's/^@//')
           
           # ساخت پوشه links
           OUTPUT_DIR="links"
           mkdir -p "$OUTPUT_DIR"
           
-          if [[ "$SEARCH_TYPE" == *"by_profile"* ]]; then
-            # حالت جستجو با اسم پیج
-            USERNAME="${{ github.event.inputs.username }}"
-            if [ -z "$USERNAME" ]; then
-              echo "❌ لطفا اسم پیج رو وارد کن!"
-              exit 1
-            fi
-            # حذف @ از اول اسم اگه باشه
-            USERNAME_CLEAN=$(echo "$USERNAME" | sed 's/^@//')
-            
-            # ساخت لینک کامل پروفایل
-            SEARCH_URL="https://www.tiktok.com/@${USERNAME_CLEAN}"
-            OUTPUT_FILE="${OUTPUT_DIR}/${USERNAME_CLEAN}.txt"
-            echo "در حال گرفتن لینک ویدیوهای پیج ${USERNAME_CLEAN}..."
-            
-          else
-            # حالت جستجو با کلمه کلیدی یا هشتگ
-            QUERY="${{ github.event.inputs.search_query }}"
-            if [ -z "$QUERY" ]; then
-              echo "❌ لطفا متن جستجو رو وارد کن!"
-              exit 1
-            fi
-            # تبدیل فاصله به + برای url
-            QUERY_ENCODED=$(echo "$QUERY" | sed 's/ /+/g')
-            
-            # ساخت لینک جستجوی تیک‌تاک
-            SEARCH_URL="https://www.tiktok.com/search?q=${QUERY_ENCODED}"
-            # حذف کاراکترهای خاص برای اسم فایل
-            SAFE_NAME=$(echo "$QUERY" | sed 's/[^a-zA-Z0-9]/_/g')
-            OUTPUT_FILE="${OUTPUT_DIR}/search_${SAFE_NAME}.txt"
-            echo "در حال جستجوی '${QUERY}' در تیک‌تاک..."
-          fi
+          # ساخت لینک کامل پروفایل
+          PROFILE_URL="https://www.tiktok.com/@${USERNAME_CLEAN}"
+          
+          echo "در حال گرفتن لینک ویدیوهای ${USERNAME_CLEAN}..."
           
           # استخراج لینک ویدیوها با yt-dlp
           yt-dlp \
             --flat-playlist \
             --print "%(webpage_url)s" \
             --playlist-end "${COUNT}" \
-            "$SEARCH_URL" > "$OUTPUT_FILE"
+            "$PROFILE_URL" > "${OUTPUT_DIR}/${USERNAME_CLEAN}.txt"
           
           # نمایش تعداد لینک‌های گرفته شده
-          LINK_COUNT=$(wc -l < "$OUTPUT_FILE")
+          LINK_COUNT=$(wc -l < "${OUTPUT_DIR}/${USERNAME_CLEAN}.txt")
+          echo "✅ ${LINK_COUNT} لینک ویدیو استخراج شد"
           
-          if [ "$LINK_COUNT" -eq 0 ]; then
-            echo "⚠️ هیچ ویدیویی پیدا نشد!"
-            echo "هیچ ویدیویی پیدا نشد" > "$OUTPUT_FILE"
-          else
-            echo "✅ ${LINK_COUNT} لینک ویدیو استخراج شد"
-          fi
-          
-          echo "📁 فایل در مسیر ${OUTPUT_FILE} ذخیره شد"
-          
-          # نمایش چند لینک اول برای پیش‌نمایش
-          echo ""
-          echo "===== پیش‌نمایش لینک‌ها ====="
-          head -5 "$OUTPUT_FILE"
+          echo "📁 فایل در مسیر ${OUTPUT_DIR}/${USERNAME_CLEAN}.txt ذخیره شد"
 
       - name: Push changes to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add links/
-          git commit -m "Add TikTok links [skip ci]" || echo "Nothing to commit"
+          git commit -m "Download media [skip ci]" || echo "Nothing to commit"
           git push
