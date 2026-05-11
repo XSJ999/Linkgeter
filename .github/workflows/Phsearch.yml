@@ -83,7 +83,7 @@ jobs:
           
           echo "🔗 آدرس جستجو: $SEARCH_URL"
           
-          # استخراج اطلاعات
+          # استخراج اطلاعات — بهبود یافته برای مدت زمان
           yt-dlp \
             --flat-playlist \
             --print "%(webpage_url)s | %(title)s | %(uploader)s | %(view_count)s | %(duration_string)s" \
