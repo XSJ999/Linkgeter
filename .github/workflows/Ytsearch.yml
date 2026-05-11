@@ -48,8 +48,8 @@ jobs:
           COUNT="${{ github.event.inputs.video_count }}"
           SORT="${{ github.event.inputs.sort_by }}"
           
-          # ساخت پوشه YT RESULTS
-          OUTPUT_DIR="YT RESULTS"
+          # ساخت پوشه YT_Results (بدون فاصله)
+          OUTPUT_DIR="YT_Results"
           mkdir -p "$OUTPUT_DIR"
           
           # تبدیل فاصله به فاصله معمولی
@@ -79,42 +79,43 @@ jobs:
           echo "📊 تعداد: $COUNT ویدیو"
           
           # ایجاد فایل با هدر
-          echo "# نتایج جستجوی یوتیوب" > "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
-          echo "# کلمه جستجو: ${SEARCH_CLEAN}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
-          echo "# مرتب‌سازی: ${SORT}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
-          echo "# تعداد درخواستی: ${COUNT}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
-          echo "# تاریخ: $(date '+%Y-%m-%d %H:%M:%S')" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
-          echo "" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
-          echo "لینک | عنوان ویدیو | کانال | بازدیدها | مدت زمان" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
-          echo "-----|------------|------|---------|-----------" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          {
+            echo "# نتایج جستجوی یوتیوب"
+            echo "# کلمه جستجو: ${SEARCH_CLEAN}"
+            echo "# مرتب‌سازی: ${SORT}"
+            echo "# تعداد درخواستی: ${COUNT}"
+            echo "# تاریخ: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo ""
+            echo "لینک | عنوان ویدیو | کانال | بازدیدها | مدت زمان"
+            echo "-----|------------|------|---------|-----------"
+          } > "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
           
           # استخراج اطلاعات ویدیوها با ytsearch
           yt-dlp \
             --flat-playlist \
             --print "%(webpage_url)s | %(title)s | %(channel)s | %(view_count)s | %(duration_string)s" \
-            "${SEARCH_TYPE}${COUNT}:${SEARCH_CLEAN}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+            "${SEARCH_TYPE}${COUNT}:${SEARCH_CLEAN}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt" 2>&1
           
           # نمایش تعداد لینک‌های گرفته شده
           LINK_COUNT=$(grep -c "https://" "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt" 2>/dev/null || echo 0)
           
           if [ "$LINK_COUNT" -eq 0 ]; then
             echo "⚠️ هیچ ویدیویی پیدا نشد!"
-            echo "هیچ نتیجه‌ای یافت نشد" > "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
           else
             echo "✅ ${LINK_COUNT} لینک ویدیو استخراج شد"
           fi
           
           echo "📁 فایل در مسیر ${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt ذخیره شد"
           
-          # پیش‌نمایش نتایج
+          # نمایش محتوای فایل برای دیباگ
           echo ""
-          echo "===== نتایج جستجو ====="
-          head -15 "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "===== محتوای فایل ====="
+          cat "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
 
       - name: Push changes to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "YT RESULTS/"
+          git add YT_Results/
           git commit -m "Add YouTube search results [skip ci]" || echo "Nothing to commit"
           git push
