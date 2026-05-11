@@ -1,0 +1,39 @@
+name: استخراج لینک تیک‌تاک
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'اسم پیج تیک‌تاک'
+        required: true
+        type: string
+      count:
+        description: 'تعداد ویدیو'
+        required: false
+        type: number
+        default: 10
+
+jobs:
+  get-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: نصب yt-dlp
+        run: pip install yt-dlp
+      
+      - name: گرفتن لینک‌ها
+        run: |
+          USER="${{ github.event.inputs.username }}"
+          USER=$(echo "$USER" | sed 's/@//g')
+          COUNT="${{ github.event.inputs.count }}"
+          mkdir -p links
+          yt-dlp --flat-playlist --print "%(webpage_url)s" --playlist-end "$COUNT" "https://www.tiktok.com/@${USER}" > "links/${USER}.txt"
+      
+      - name: ذخیره در ریپو
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add links/
+          git commit -m "add tiktok links" || echo "ok"
+          git push
