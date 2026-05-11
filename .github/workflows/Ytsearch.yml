@@ -1,0 +1,120 @@
+name: جستجو در یوتیوب
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_query:
+        description: 'کلمه یا جمله مورد نظر برای جستجو (مثل: بارسلونا)'
+        required: true
+        type: string
+      video_count:
+        description: 'تعداد ویدیو برای استخراج'
+        required: false
+        type: number
+        default: 10
+      sort_by:
+        description: 'مرتب‌سازی نتایج'
+        required: false
+        type: choice
+        options:
+          - relevance (مرتبط‌ترین)
+          - date (جدیدترین)
+          - views (پربازدیدترین)
+          - rating (امتیاز)
+        default: 'relevance (مرتبط‌ترین)'
+
+permissions:
+  contents: write
+
+jobs:
+  search-youtube:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install yt-dlp
+        run: |
+          pip install -q -U yt-dlp
+
+      - name: Search YouTube and extract links with details
+        run: |
+          SEARCH="${{ github.event.inputs.search_query }}"
+          COUNT="${{ github.event.inputs.video_count }}"
+          SORT="${{ github.event.inputs.sort_by }}"
+          
+          # ساخت پوشه YT RESULTS
+          OUTPUT_DIR="YT RESULTS"
+          mkdir -p "$OUTPUT_DIR"
+          
+          # تبدیل فاصله به فاصله معمولی
+          SEARCH_CLEAN=$(echo "$SEARCH" | sed 's/ / /g')
+          
+          # اسم فایل خروجی (حذف کاراکترهای خاص)
+          SAFE_NAME=$(echo "$SEARCH" | sed 's/[^a-zA-Z0-9\-_]//g' | sed 's/ /_/g')
+          
+          # انتخاب نوع جستجو بر اساس مرتب‌سازی
+          case "$SORT" in
+            "date (جدیدترین)")
+              SEARCH_TYPE="ytsearchdate"
+              ;;
+            "views (پربازدیدترین)")
+              SEARCH_TYPE="ytsearchviewscount"
+              ;;
+            "rating (امتیاز)")
+              SEARCH_TYPE="ytsearchrating"
+              ;;
+            *)
+              SEARCH_TYPE="ytsearch"
+              ;;
+          esac
+          
+          echo "🔍 در حال جستجوی '$SEARCH_CLEAN' در یوتیوب..."
+          echo "🎯 مرتب‌سازی: $SORT"
+          echo "📊 تعداد: $COUNT ویدیو"
+          
+          # ایجاد فایل با هدر
+          echo "# نتایج جستجوی یوتیوب" > "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "# کلمه جستجو: ${SEARCH_CLEAN}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "# مرتب‌سازی: ${SORT}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "# تعداد درخواستی: ${COUNT}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "# تاریخ: $(date '+%Y-%m-%d %H:%M:%S')" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "لینک | عنوان ویدیو | کانال | بازدیدها | مدت زمان" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          echo "-----|------------|------|---------|-----------" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          
+          # استخراج اطلاعات ویدیوها با ytsearch
+          yt-dlp \
+            --flat-playlist \
+            --print "%(webpage_url)s | %(title)s | %(channel)s | %(view_count)s | %(duration_string)s" \
+            "${SEARCH_TYPE}${COUNT}:${SEARCH_CLEAN}" >> "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          
+          # نمایش تعداد لینک‌های گرفته شده
+          LINK_COUNT=$(grep -c "https://" "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt" 2>/dev/null || echo 0)
+          
+          if [ "$LINK_COUNT" -eq 0 ]; then
+            echo "⚠️ هیچ ویدیویی پیدا نشد!"
+            echo "هیچ نتیجه‌ای یافت نشد" > "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+          else
+            echo "✅ ${LINK_COUNT} لینک ویدیو استخراج شد"
+          fi
+          
+          echo "📁 فایل در مسیر ${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt ذخیره شد"
+          
+          # پیش‌نمایش نتایج
+          echo ""
+          echo "===== نتایج جستجو ====="
+          head -15 "${OUTPUT_DIR}/youtube_${SAFE_NAME}.txt"
+
+      - name: Push changes to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "YT RESULTS/"
+          git commit -m "Add YouTube search results [skip ci]" || echo "Nothing to commit"
+          git push
