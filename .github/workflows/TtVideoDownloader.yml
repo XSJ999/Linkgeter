@@ -1,0 +1,88 @@
+name: Download TikTok Videos
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'TikTok username (e.g., "tiktok" or "@tiktok")'
+        required: true
+        type: string
+
+jobs:
+  download-tiktok:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install yt-dlp
+      run: |
+        pip install yt-dlp
+
+    - name: Download latest 10 videos from TikTok (best quality)
+      run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          # Remove @ if present at the beginning of username
+          USERNAME="${USERNAME#@}"
+          OUTPUT_DIR="ttvideos"
+          mkdir -p "$OUTPUT_DIR"
+
+          echo "Starting download for TikTok user: $USERNAME"
+          echo "Downloading videos with BEST available quality..."
+          
+          # Download with highest quality, no resolution limit
+          yt-dlp \
+            "https://www.tiktok.com/@$USERNAME" \
+            -f "bestvideo+bestaudio/best" \
+            -o "$OUTPUT_DIR/%(uploader)s - %(title)s - %(id)s.%(ext)s" \
+            --playlist-end 10 \
+            --merge-output-format mp4 \
+            --no-progress \
+            --no-warnings \
+            --no-mtime \
+            --ignore-errors \
+            --no-overwrites \
+            --retries 5 \
+            --fragment-retries 10
+
+          if [ $? -eq 0 ]; then
+            echo "Download completed successfully."
+            echo "Files saved in '$OUTPUT_DIR/' directory."
+            ls -la "$OUTPUT_DIR/"
+          else
+            echo "Download encountered some errors, but check the '$OUTPUT_DIR/' directory for any downloaded files."
+            exit 1
+          fi
+
+    - name: Display downloaded files info
+      run: |
+        OUTPUT_DIR="ttvideos"
+        if [ -d "$OUTPUT_DIR" ]; then
+          echo "=== Downloaded videos ==="
+          for file in "$OUTPUT_DIR"/*; do
+            if [ -f "$file" ]; then
+              SIZE=$(du -h "$file" | cut -f1)
+              echo "- $(basename "$file") ($SIZE)"
+            fi
+          done
+        fi
+
+    - name: Commit and push videos (if any)
+      run: |
+        OUTPUT_DIR="ttvideos"
+        if [ -d "$OUTPUT_DIR" ] && [ -n "$(ls -A "$OUTPUT_DIR")" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "$OUTPUT_DIR/"
+            git commit -m "Add 10 latest TikTok videos for @${{ github.event.inputs.username }} (best quality)" || echo "No changes to commit"
+            git push
+        else
+            echo "No videos were downloaded to commit."
+        fi
