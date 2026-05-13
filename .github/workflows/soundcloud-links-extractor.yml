@@ -1,0 +1,284 @@
+name: soundcloud-links-extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_query:
+        description: 'عبارت جستجو در SoundCloud'
+        required: true
+        type: string
+        default: 'lofi hip hop'
+      max_results:
+        description: 'تعداد نتایج برای استخراج (حداکثر ۱۰)'
+        required: false
+        type: number
+        default: 10
+      save_description:
+        description: 'ذخیره توضیحات هر آهنگ به صورت جداگانه'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  extract-links:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yt-dlp
+        run: |
+          pip install -q -U "yt-dlp[default]"
+
+      - name: Create links directory
+        run: |
+          mkdir -p links
+          echo "# SoundCloud Search Results" > links/README.md
+          echo "" >> links/README.md
+          echo "**Search Query:** ${{ github.event.inputs.search_query }}" >> links/README.md
+          echo "**Date:** $(date '+%Y-%m-%d %H:%M:%S')" >> links/README.md
+          echo "**Total Links:** ${{ github.event.inputs.max_results }}" >> links/README.md
+          echo "" >> links/README.md
+          echo "## Extracted Links" >> links/README.md
+          echo "" >> links/README.md
+
+      - name: Extract SoundCloud links
+        id: extract
+        run: |
+          SEARCH_QUERY="${{ github.event.inputs.search_query }}"
+          MAX_RESULTS=${{ github.event.inputs.max_results }}
+          
+          # محدود کردن حداکثر به ۱۰ نتیجه
+          if [ "$MAX_RESULTS" -gt 10 ]; then
+            MAX_RESULTS=10
+            echo "⚠️ تعداد نتایج به ۱۰ محدود شد (حداکثر مجاز)"
+          fi
+          
+          # استفاده از قابلیت جستجوی داخلی yt-dlp برای SoundCloud
+          SEARCH_URL="scsearch${MAX_RESULTS}:${SEARCH_QUERY}"
+          
+          echo "🔄 در حال جستجو در SoundCloud برای: $SEARCH_QUERY"
+          echo "📊 حداکثر نتایج: $MAX_RESULTS"
+          
+          # استخراج اطلاعات بدون دانلود فایل‌ها
+          yt-dlp \
+            --flat-playlist \
+            --dump-json \
+            --ignore-errors \
+            --no-warnings \
+            --extractor-args "soundcloud:client_id=auto" \
+            "$SEARCH_URL" > results.json 2>/dev/null
+          
+          # بررسی وجود نتایج
+          if [ ! -s results.json ]; then
+            echo "❌ هیچ نتیجه‌ای یافت نشد. لطفاً عبارت جستجوی دیگری امتحان کنید."
+            exit 1
+          fi
+          
+          # پردازش JSON و استخراج لینک‌ها (نسخه تصحیح شده)
+          python3 << 'EOF'
+          import json
+          import re
+          
+          links_file = "links/soundcloud_links.txt"
+          urls_only_file = "links/urls_only.txt"
+          readme_file = "links/README.md"
+          
+          with open('results.json', 'r') as f:
+              content = f.read()
+          
+          # هر خط یک JSON جداگانه است
+          lines = content.strip().split('\n')
+          
+          track_count = 0
+          links_list = []
+          
+          with open(links_file, 'w', encoding='utf-8') as links_out:
+              with open(urls_only_file, 'w', encoding='utf-8') as urls_out:
+                  for line in lines:
+                      if not line.strip():
+                          continue
+                      
+                      try:
+                          data = json.loads(line)
+                          
+                          # استخراج اطلاعات اصلی
+                          track_url = data.get('webpage_url', data.get('url', ''))
+                          title = data.get('title', 'Unknown Title')
+                          uploader = data.get('uploader', 'Unknown Artist')
+                          duration = data.get('duration', 0)
+                          
+                          # بررسی معتبر بودن لینک
+                          if track_url and 'soundcloud.com' in track_url:
+                              track_count += 1
+                              
+                              # اصلاح مشکل float برای duration
+                              try:
+                                  duration_int = int(float(duration)) if duration else 0
+                              except (ValueError, TypeError):
+                                  duration_int = 0
+                              
+                              # تبدیل ثانیه به دقیقه:ثانیه
+                              if duration_int > 0:
+                                  minutes = duration_int // 60
+                                  seconds = duration_int % 60
+                                  duration_str = f"{minutes}:{seconds:02d}"
+                              else:
+                                  duration_str = "N/A"
+                              
+                              # ذخیره در فایل لینک‌ها با جزئیات
+                              links_out.write(f"[{track_count}] {uploader} - {title}\n")
+                              links_out.write(f"    URL: {track_url}\n")
+                              links_out.write(f"    Duration: {duration_str}\n\n")
+                              
+                              # ذخیره فقط لینک‌ها در فایل جداگانه
+                              urls_out.write(f"{track_url}\n")
+                              
+                              # ذخیره در لیست برای نمایش
+                              links_list.append({
+                                  'url': track_url,
+                                  'title': title,
+                                  'artist': uploader,
+                                  'duration': duration_str
+                              })
+                              
+                      except json.JSONDecodeError:
+                          continue
+                      except Exception as e:
+                          print(f"⚠️ خطا در پردازش یک آیتم: {e}")
+                          continue
+          
+          # بروزرسانی README.md
+          with open(readme_file, 'r', encoding='utf-8') as f:
+              readme_content = f.read()
+          
+          with open(readme_file, 'a', encoding='utf-8') as f:
+              if links_list:
+                  f.write("\n| # | Artist | Title | Duration | Link |\n")
+                  f.write("|---|--------|-------|----------|------|\n")
+                  
+                  for i, track in enumerate(links_list, 1):
+                      # کوتاه کردن عنوان در صورت طولانی بودن
+                      short_title = track['title'][:40] + "..." if len(track['title']) > 40 else track['title']
+                      short_artist = track['artist'][:30] + "..." if len(track['artist']) > 30 else track['artist']
+                      duration = track['duration']
+                      f.write(f"| {i} | {short_artist} | {short_title} | {duration} | [Listen]({track['url']}) |\n")
+              else:
+                  f.write("\n❌ **هیچ نتیجه‌ای یافت نشد**\n")
+          
+          # ذخیره داده‌ها به صورت JSON
+          with open('links/links_data.json', 'w', encoding='utf-8') as f:
+              json.dump(links_list, f, indent=2, ensure_ascii=False)
+          
+          print(f"✅ {track_count} لینک با موفقیت استخراج شد")
+          
+          # ذخیره تعداد برای مرحله بعد
+          with open('link_count.txt', 'w') as f:
+              f.write(str(track_count))
+          EOF
+          
+          # ذخیره تعداد در output برای استفاده در summary
+          LINK_COUNT=$(cat link_count.txt)
+          echo "link_count=$LINK_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Save descriptions (optional)
+        if: github.event.inputs.save_description == 'true'
+        run: |
+          mkdir -p links/descriptions
+          
+          python3 << 'EOF'
+          import json
+          import subprocess
+          import re
+          
+          if not os.path.exists('links/urls_only.txt'):
+              print("⚠️ فایل لینک‌ها یافت نشد")
+              exit(0)
+          
+          with open('links/urls_only.txt', 'r') as f:
+              urls = [line.strip() for line in f if line.strip()]
+          
+          for i, url in enumerate(urls, 1):
+              try:
+                  result = subprocess.run(
+                      ['yt-dlp', '--dump-json', '--skip-download', '--no-warnings', url],
+                      capture_output=True,
+                      text=True,
+                      timeout=60
+                  )
+                  
+                  if result.returncode == 0 and result.stdout:
+                      data = json.loads(result.stdout)
+                      description = data.get('description', 'No description available')
+                      title = data.get('title', f'track_{i}')
+                      
+                      safe_title = re.sub(r'[^\\w\\s-]', '', title)[:50]
+                      with open(f'links/descriptions/{i}_{safe_title}.txt', 'w', encoding='utf-8') as desc_file:
+                          desc_file.write(f"Title: {title}\\n")
+                          desc_file.write(f"URL: {url}\\n")
+                          desc_file.write(f"\\nDescription:\\n{description}\\n")
+                      
+                      print(f"✅ توضیحات آهنگ {i} ذخیره شد")
+                  else:
+                      print(f"⚠️ خطا در دریافت توضیحات برای {url}")
+                      
+              except Exception as e:
+                  print(f"⚠️ خطا در پردازش {url}: {e}")
+          EOF
+
+      - name: Generate summary
+        run: |
+          LINK_COUNT="${{ steps.extract.outputs.link_count }}"
+          
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🎵 SoundCloud Links Extractor
+          
+          | آیتم | مقدار |
+          |------|-------|
+          | **عبارت جستجو** | ${{ github.event.inputs.search_query }} |
+          | **تعداد لینک‌های استخراج شده** | ${LINK_COUNT:-0} |
+          | **تاریخ اجرا** | $(date '+%Y-%m-%d %H:%M:%S') |
+          
+          ### 📁 فایل‌های ایجاد شده در پوشه \`links\`:
+          
+          - \`soundcloud_links.txt\` - لینک‌ها به همراه جزئیات کامل
+          - \`urls_only.txt\` - فقط آدرس‌های اینترنتی (یک در هر خط)
+          - \`links_data.json\` - داده‌ها به فرمت JSON
+          - \`README.md\` - گزارش خوانا با جدول لینک‌ها
+          EOF
+          
+          if [ "${{ github.event.inputs.save_description }}" = "true" ]; then
+            echo "- \`descriptions/\` - پوشه حاوی توضیحات هر آهنگ" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "links/soundcloud_links.txt" ] && [ -s "links/soundcloud_links.txt" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📋 نمونه لینک‌های استخراج شده:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -20 links/soundcloud_links.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit and push links
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add links/
+          git commit -m "Extract SoundCloud links: ${{ github.event.inputs.search_query }} [skip ci]" || echo "Nothing to commit"
+          git push
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundcloud-links
+          path: links/
+          retention-days: 30
