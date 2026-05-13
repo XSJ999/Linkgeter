@@ -1,0 +1,288 @@
+name: chatgpt automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      action_type:
+        description: 'نوع عملیات'
+        required: true
+        type: choice
+        options:
+          - ask_question (پرسش و پاسخ)
+          - summarize_text (خلاصه‌سازی متن)
+          - analyze_code (تحلیل کد)
+          - translate_text (ترجمه متن)
+          - generate_docs (تولید داکیومنت)
+          - custom_prompt (پرامپت دلخواه)
+        default: 'ask_question (پرسش و پاسخ)'
+
+      user_question:
+        description: 'سوال یا متنی که می‌خواهید پردازش شود'
+        required: true
+        type: string
+
+      custom_prompt:
+        description: 'پرامپت سفارشی (فقط در حالت custom_prompt استفاده می‌شود)'
+        required: false
+        type: string
+
+      model:
+        description: 'مدل ChatGPT'
+        required: true
+        type: choice
+        options:
+          - gpt-4
+          - gpt-4-turbo
+          - gpt-3.5-turbo
+        default: 'gpt-3.5-turbo'
+
+      temperature:
+        description: 'دمای خلاقیت (0.0 تا 1.0)'
+        required: false
+        type: number
+        default: 0.7
+
+      max_tokens:
+        description: 'حداکثر طول پاسخ (توکن)'
+        required: false
+        type: number
+        default: 2000
+
+      language:
+        description: 'زبان پاسخ'
+        required: false
+        type: choice
+        options:
+          - auto (همان زبان ورودی)
+          - persian (فارسی)
+          - english (انگلیسی)
+          - turkish (ترکی)
+        default: 'auto (همان زبان ورودی)'
+
+      save_to_file:
+        description: 'ذخیره خروجی در فایل'
+        required: false
+        type: boolean
+        default: true
+
+      output_filename:
+        description: 'نام فایل خروجی (بدون پسوند)'
+        required: false
+        type: string
+        default: 'chatgpt_response'
+
+permissions:
+  contents: write
+
+jobs:
+  chatgpt-process:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install openai python-dotenv
+
+      - name: Prepare prompt based on action type
+        id: prepare
+        run: |
+          ACTION_TYPE="${{ github.event.inputs.action_type }}"
+          USER_INPUT="${{ github.event.inputs.user_question }}"
+          CUSTOM_PROMPT="${{ github.event.inputs.custom_prompt }}"
+          LANGUAGE="${{ github.event.inputs.language }}"
+          
+          # تنظیم پرامپت بر اساس نوع عملیات
+          case "$ACTION_TYPE" in
+            "ask_question (پرسش و پاسخ)")
+              PROMPT="$USER_INPUT"
+              ;;
+            "summarize_text (خلاصه‌سازی متن)")
+              PROMPT="لطفاً متن زیر را به صورت خلاصه و مفید توضیح بده، نکات کلیدی را استخراج کن:\n\n$USER_INPUT"
+              ;;
+            "analyze_code (تحلیل کد)")
+              PROMPT="لطفاً کد زیر را تحلیل کن، مشکلات احتمالی را پیدا کن و پیشنهادات بهبود بده:\n\n\`\`\`\n$USER_INPUT\n\`\`\`"
+              ;;
+            "translate_text (ترجمه متن)")
+              if [ "$LANGUAGE" = "persian (فارسی)" ]; then
+                PROMPT="لطفاً متن زیر را به فارسی روان ترجمه کن:\n\n$USER_INPUT"
+              elif [ "$LANGUAGE" = "english (انگلیسی)" ]; then
+                PROMPT="Please translate the following text to English:\n\n$USER_INPUT"
+              elif [ "$LANGUAGE" = "turkish (ترکی)" ]; then
+                PROMPT="Lütfen aşağıdaki metni Türkçe'ye çevir:\n\n$USER_INPUT"
+              else
+                PROMPT="لطفاً متن زیر را ترجمه کن (زبان مقصد را خودت تشخیص بده):\n\n$USER_INPUT"
+              fi
+              ;;
+            "generate_docs (تولید داکیومنت)")
+              PROMPT="لطفاً برای کد زیر داکیومنت کامل بنویس (توضیح عملکرد، پارامترها، خروجی و مثال):\n\n\`\`\`\n$USER_INPUT\n\`\`\`"
+              ;;
+            "custom_prompt (پرامپت دلخواه)")
+              PROMPT="$CUSTOM_PROMPT\n\nمتن ورودی:\n$USER_INPUT"
+              ;;
+          esac
+          
+          # ذخیره پرامپت در فایل برای استفاده بعدی
+          echo "$PROMPT" > prompt.txt
+          echo "prompt_file=prompt.txt" >> $GITHUB_OUTPUT
+
+      - name: Call ChatGPT API
+        id: chatgpt
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 << 'EOF'
+          import os
+          import json
+          from openai import OpenAI
+          
+          # خواندن پرامپت از فایل
+          with open('prompt.txt', 'r', encoding='utf-8') as f:
+              prompt = f.read()
+          
+          # تنظیمات
+          model = "${{ github.event.inputs.model }}"
+          temperature = float("${{ github.event.inputs.temperature }}")
+          max_tokens = int("${{ github.event.inputs.max_tokens }}")
+          
+          # فراخوانی API
+          client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
+          
+          try:
+              response = client.chat.completions.create(
+                  model=model,
+                  messages=[
+                      {"role": "system", "content": "You are a helpful assistant."},
+                      {"role": "user", "content": prompt}
+                  ],
+                  temperature=temperature,
+                  max_tokens=max_tokens
+              )
+              
+              answer = response.choices[0].message.content
+              
+              # ذخیره پاسخ
+              with open('response.txt', 'w', encoding='utf-8') as f:
+                  f.write(answer)
+              
+              # ذخیره آمار استفاده
+              usage = {
+                  'prompt_tokens': response.usage.prompt_tokens,
+                  'completion_tokens': response.usage.completion_tokens,
+                  'total_tokens': response.usage.total_tokens,
+                  'model': model
+              }
+              
+              with open('usage.json', 'w') as f:
+                  json.dump(usage, f, indent=2)
+              
+              print("✅ پاسخ با موفقیت دریافت شد")
+              
+          except Exception as e:
+              print(f"❌ خطا در ارتباط با API: {e}")
+              exit(1)
+          EOF
+
+      - name: Get response statistics
+        id: stats
+        run: |
+          # خواندن آمار از فایل
+          TOTAL_TOKENS=$(python3 -c "import json; print(json.load(open('usage.json'))['total_tokens'])")
+          PROMPT_TOKENS=$(python3 -c "import json; print(json.load(open('usage.json'))['prompt_tokens'])")
+          COMPLETION_TOKENS=$(python3 -c "import json; print(json.load(open('usage.json'))['completion_tokens'])")
+          
+          echo "total_tokens=$TOTAL_TOKENS" >> $GITHUB_OUTPUT
+          echo "prompt_tokens=$PROMPT_TOKENS" >> $GITHUB_OUTPUT
+          echo "completion_tokens=$COMPLETION_TOKENS" >> $GITHUB_OUTPUT
+
+      - name: Display response
+        run: |
+          echo "## 🤖 پاسخ ChatGPT" >> response_display.md
+          echo "" >> response_display.md
+          echo '```' >> response_display.md
+          cat response.txt >> response_display.md
+          echo '```' >> response_display.md
+          
+          # نمایش در GitHub Actions
+          cat response_display.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Save response to file
+        if: github.event.inputs.save_to_file == 'true'
+        run: |
+          FILENAME="${{ github.event.inputs.output_filename }}"
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          OUTPUT_DIR="chatgpt_responses"
+          
+          mkdir -p "$OUTPUT_DIR"
+          
+          # ذخیره پاسخ اصلی
+          cp response.txt "$OUTPUT_DIR/${FILENAME}_${TIMESTAMP}.txt"
+          
+          # ذخیره پاسخ با فرمت Markdown
+          cat > "$OUTPUT_DIR/${FILENAME}_${TIMESTAMP}.md" << MD
+          # پاسخ ChatGPT
+          
+          **نوع عملیات:** ${{ github.event.inputs.action_type }}
+          **مدل:** ${{ github.event.inputs.model }}
+          **دما:** ${{ github.event.inputs.temperature }}
+          **تاریخ:** $(date)
+          
+          ## پرسش/ورودی:
+          \`\`\`
+          ${{ github.event.inputs.user_question }}
+          \`\`\`
+          
+          ## پاسخ:
+          $(cat response.txt)
+          
+          ## آمار:
+          - توکن‌های مصرف شده: ${{ steps.stats.outputs.total_tokens }}
+          - توکن‌های ورودی: ${{ steps.stats.outputs.prompt_tokens }}
+          - توکن‌های خروجی: ${{ steps.stats.outputs.completion_tokens }}
+          MD
+          
+          echo "✅ پاسخ در پوشه $OUTPUT_DIR ذخیره شد"
+
+      - name: Create summary report
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          
+          ## 📊 آمار درخواست
+          
+          | آیتم | مقدار |
+          |------|-------|
+          | **نوع عملیات** | ${{ github.event.inputs.action_type }} |
+          | **مدل استفاده شده** | ${{ github.event.inputs.model }} |
+          | **دمای خلاقیت** | ${{ github.event.inputs.temperature }} |
+          | **توکن‌های مصرف شده** | ${{ steps.stats.outputs.total_tokens }} |
+          | **توکن‌های ورودی** | ${{ steps.stats.outputs.prompt_tokens }} |
+          | **توکن‌های خروجی** | ${{ steps.stats.outputs.completion_tokens }} |
+          
+          > 💡 **نکته:** هر 1000 توکن تقریباً برابر 750 کلمه است
+          EOF
+
+      - name: Commit and push responses
+        if: github.event.inputs.save_to_file == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add chatgpt_responses/
+          git commit -m "Add ChatGPT response [skip ci]" || echo "Nothing to commit"
+          git push
+
+      - name: Upload response as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-response
+          path: |
+            response.txt
+            usage.json
+            chatgpt_responses/
+          retention-days: 30
