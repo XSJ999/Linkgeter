@@ -1,0 +1,424 @@
+name: soundcloud downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_type:
+        description: 'Input type'
+        required: true
+        type: choice
+        options:
+          - single_track (direct URL)
+          - search (keyword search)
+          - playlist (URL)
+          - user (username/artist page)
+        default: 'single_track (direct URL)'
+
+      track_url:
+        description: 'SoundCloud URL (track/playlist/user) - required for URL modes'
+        required: false
+        type: string
+
+      search_keyword:
+        description: 'Search keyword - required for search mode'
+        required: false
+        type: string
+
+      search_limit:
+        description: 'Maximum number of search results to download (1-50)'
+        required: false
+        type: number
+        default: 10
+
+      output_format:
+        description: 'Output format'
+        required: true
+        type: choice
+        options:
+          - mp3 (audio only)
+          - best (original format)
+          - m4a (AAC)
+          - opus
+          - flac (lossless, if available)
+        default: 'mp3 (audio only)'
+
+      audio_quality:
+        description: 'Audio bitrate (for MP3) or quality (0-10 best-worst)'
+        required: false
+        type: choice
+        options:
+          - '320 (best)'
+          - '192'
+          - '128'
+          - '64'
+          - '0 (VBR best)'
+          - '5 (VBR medium)'
+          - '10 (VBR worst)'
+        default: '320 (best)'
+
+      download_playlist:
+        description: 'Download entire playlist/user tracks (if URL points to playlist/user)'
+        required: false
+        type: boolean
+        default: true
+
+      max_tracks:
+        description: 'Maximum tracks to download from playlist/user (1-500)'
+        required: false
+        type: number
+        default: 50
+
+      concurrent_downloads:
+        description: 'Number of concurrent downloads (faster but higher bandwidth)'
+        required: false
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+        default: '2'
+
+      embed_metadata:
+        description: 'Embed metadata (title, artist, album art, lyrics)'
+        required: false
+        type: boolean
+        default: true
+
+      write_lyrics:
+        description: 'Write lyrics to .lrc file if available'
+        required: false
+        type: boolean
+        default: false
+
+      write_description:
+        description: 'Save track description as .description file'
+        required: false
+        type: boolean
+        default: false
+
+      download_comments:
+        description: 'Download comments as .comments.json file'
+        required: false
+        type: boolean
+        default: false
+
+      trim_start:
+        description: 'Trim start timestamp (e.g. 0:30) — leave empty to skip'
+        required: false
+        type: string
+
+      trim_end:
+        description: 'Trim end timestamp (e.g. 2:15) — leave empty to skip'
+        required: false
+        type: string
+
+      output_folder:
+        description: 'Folder to store downloads (relative to repo root)'
+        required: false
+        type: string
+        default: 'soundcloud'
+
+      extra_args:
+        description: 'Extra yt-dlp arguments (advanced users)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-store:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg zip
+          pip install -q -U "yt-dlp[default]" mutagen
+
+      - name: Validate inputs
+        run: |
+          INPUT_TYPE="${{ github.event.inputs.input_type }}"
+          
+          if [ "$INPUT_TYPE" = "single_track (direct URL)" ] && [ -z "${{ github.event.inputs.track_url }}" ]; then
+            echo "Error: track_url is required for single track mode"
+            exit 1
+          fi
+          
+          if [ "$INPUT_TYPE" = "search (keyword search)" ] && [ -z "${{ github.event.inputs.search_keyword }}" ]; then
+            echo "Error: search_keyword is required for search mode"
+            exit 1
+          fi
+          
+          if [ "$INPUT_TYPE" = "playlist (URL)" ] && [ -z "${{ github.event.inputs.track_url }}" ]; then
+            echo "Error: track_url is required for playlist mode"
+            exit 1
+          fi
+          
+          if [ "$INPUT_TYPE" = "user (username/artist page)" ] && [ -z "${{ github.event.inputs.track_url }}" ]; then
+            echo "Error: track_url is required for user mode"
+            exit 1
+          fi
+          
+          SEARCH_LIMIT="${{ github.event.inputs.search_limit }}"
+          if [ "$SEARCH_LIMIT" -lt 1 ] || [ "$SEARCH_LIMIT" -gt 50 ]; then
+            echo "Error: search_limit must be between 1 and 50"
+            exit 1
+          fi
+          
+          MAX_TRACKS="${{ github.event.inputs.max_tracks }}"
+          if [ "$MAX_TRACKS" -lt 1 ] || [ "$MAX_TRACKS" -gt 500 ]; then
+            echo "Error: max_tracks must be between 1 and 500"
+            exit 1
+          fi
+
+      - name: Prepare download configuration
+        id: prepare_config
+        run: |
+          INPUT_TYPE="${{ github.event.inputs.input_type }}"
+          DOWNLOAD_URL=""
+          IS_PLAYLIST="false"
+          
+          if [ "$INPUT_TYPE" = "single_track (direct URL)" ]; then
+            DOWNLOAD_URL="${{ github.event.inputs.track_url }}"
+            IS_PLAYLIST="false"
+          elif [ "$INPUT_TYPE" = "search (keyword search)" ]; then
+            # SoundCloud search URL format
+            KEYWORD="${{ github.event.inputs.search_keyword }}"
+            ENCODED_KEYWORD=$(echo "$KEYWORD" | sed 's/ /%20/g')
+            DOWNLOAD_URL="scsearch${SEARCH_LIMIT}:${KEYWORD}"
+            IS_PLAYLIST="true"
+          elif [ "$INPUT_TYPE" = "playlist (URL)" ]; then
+            DOWNLOAD_URL="${{ github.event.inputs.track_url }}"
+            IS_PLAYLIST="${{ github.event.inputs.download_playlist }}"
+          elif [ "$INPUT_TYPE" = "user (username/artist page)" ]; then
+            DOWNLOAD_URL="${{ github.event.inputs.track_url }}"
+            IS_PLAYLIST="${{ github.event.inputs.download_playlist }}"
+          fi
+          
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+          echo "is_playlist=$IS_PLAYLIST" >> $GITHUB_OUTPUT
+
+      - name: Download media
+        run: |
+          DOWNLOAD_URL="${{ steps.prepare_config.outputs.download_url }}"
+          IS_PLAYLIST="${{ steps.prepare_config.outputs.is_playlist }}"
+          FORMAT_INPUT="${{ github.event.inputs.output_format }}"
+          AUDIO_Q_INPUT="${{ github.event.inputs.audio_quality }}"
+          CONCURRENT="${{ github.event.inputs.concurrent_downloads }}"
+          OUTPUT_FOLDER="${{ github.event.inputs.output_folder }}"
+          TRIM_START="${{ github.event.inputs.trim_start }}"
+          TRIM_END="${{ github.event.inputs.trim_end }}"
+          EMBED_META="${{ github.event.inputs.embed_metadata }}"
+          WRITE_DESC="${{ github.event.inputs.write_description }}"
+          WRITE_LYRICS="${{ github.event.inputs.write_lyrics }}"
+          DOWNLOAD_COMMENTS="${{ github.event.inputs.download_comments }}"
+          EXTRA_ARGS="${{ github.event.inputs.extra_args }}"
+          MAX_TRACKS="${{ github.event.inputs.max_tracks }}"
+
+          mkdir -p "$OUTPUT_FOLDER"
+
+          # Extract numeric quality from input (e.g., "320 (best)" -> "320")
+          AUDIO_Q=$(echo "$AUDIO_Q_INPUT" | grep -o '[0-9]*' | head -1)
+          
+          # Format selection based on output format
+          case "$FORMAT_INPUT" in
+            "mp3 (audio only)")
+              FORMAT_ARGS="-x --audio-format mp3 --audio-quality ${AUDIO_Q}"
+              EXTENSION="mp3"
+              ;;
+            "m4a (AAC)")
+              FORMAT_ARGS="-x --audio-format m4a --audio-quality ${AUDIO_Q}"
+              EXTENSION="m4a"
+              ;;
+            "opus")
+              FORMAT_ARGS="-x --audio-format opus --audio-quality ${AUDIO_Q}"
+              EXTENSION="opus"
+              ;;
+            "flac (lossless, if available)")
+              FORMAT_ARGS="-x --audio-format flac --audio-quality 0"
+              EXTENSION="flac"
+              ;;
+            "best (original format)")
+              FORMAT_ARGS="-f bestaudio/best"
+              EXTENSION="%(ext)s"
+              ;;
+          esac
+
+          # Trim section
+          SECTION_ARGS=""
+          if [ -n "$TRIM_START" ] && [ -n "$TRIM_END" ]; then
+            SECTION_ARGS="--download-sections *${TRIM_START}-${TRIM_END} --force-keyframes-at-cuts"
+          elif [ -n "$TRIM_START" ]; then
+            SECTION_ARGS="--download-sections *${TRIM_START}-inf --force-keyframes-at-cuts"
+          elif [ -n "$TRIM_END" ]; then
+            SECTION_ARGS="--download-sections *0-${TRIM_END} --force-keyframes-at-cuts"
+          fi
+
+          # Playlist/user settings
+          PLAYLIST_ARGS="--no-playlist"
+          if [ "$IS_PLAYLIST" = "true" ]; then
+            PLAYLIST_ARGS="--playlist-end ${MAX_TRACKS}"
+            # Add rate limiting to avoid being blocked
+            PLAYLIST_ARGS="${PLAYLIST_ARGS} --sleep-requests 1 --sleep-interval 2 --max-sleep-interval 5"
+          fi
+
+          # Metadata embedding
+          META_ARGS=""
+          if [ "$EMBED_META" = "true" ]; then
+            META_ARGS="--embed-thumbnail --embed-metadata --add-metadata"
+            # Add lyrics if requested
+            if [ "$WRITE_LYRICS" = "true" ]; then
+              META_ARGS="${META_ARGS} --write-lyrics"
+            fi
+          fi
+
+          # Description file
+          DESC_ARGS=""
+          if [ "$WRITE_DESC" = "true" ]; then
+            DESC_ARGS="--write-description"
+          fi
+
+          # Comments
+          COMMENTS_ARGS=""
+          if [ "$DOWNLOAD_COMMENTS" = "true" ]; then
+            COMMENTS_ARGS="--write-comments"
+          fi
+
+          # SoundCloud-specific extractor arguments
+          EXTRACTOR_ARGS="soundcloud:client_id=auto,soundcloud:app_client_id=auto"
+
+          echo "Starting download from: $DOWNLOAD_URL"
+          echo "Output format: $FORMAT_INPUT with quality ${AUDIO_Q:-best}"
+
+          # For search queries, we need to handle specially
+          if [[ "$DOWNLOAD_URL" == scsearch* ]]; then
+            echo "Search mode detected: $DOWNLOAD_URL"
+            yt-dlp \
+              --newline \
+              --no-warnings \
+              --extractor-args "$EXTRACTOR_ARGS" \
+              --concurrent-fragments "$CONCURRENT" \
+              --retries 10 \
+              --fragment-retries 10 \
+              --abort-on-unavailable-fragment \
+              --throttledratelimit 1000000 \
+              $FORMAT_ARGS \
+              $SECTION_ARGS \
+              $META_ARGS \
+              $DESC_ARGS \
+              $COMMENTS_ARGS \
+              -o "$OUTPUT_FOLDER/%(uploader)s - %(title)s [%(id)s].$EXTENSION" \
+              $EXTRA_ARGS \
+              "$DOWNLOAD_URL"
+          else
+            yt-dlp \
+              --newline \
+              --no-warnings \
+              --extractor-args "$EXTRACTOR_ARGS" \
+              --concurrent-fragments "$CONCURRENT" \
+              --retries 10 \
+              --fragment-retries 10 \
+              --abort-on-unavailable-fragment \
+              --throttledratelimit 1000000 \
+              $FORMAT_ARGS \
+              $SECTION_ARGS \
+              $META_ARGS \
+              $DESC_ARGS \
+              $COMMENTS_ARGS \
+              $PLAYLIST_ARGS \
+              -o "$OUTPUT_FOLDER/%(uploader)s - %(title)s [%(id)s].$EXTENSION" \
+              $EXTRA_ARGS \
+              "$DOWNLOAD_URL" || {
+                echo "Download failed with standard method, trying with fallback..."
+                # Fallback with different extractor arguments
+                yt-dlp \
+                  --extractor-args "soundcloud:prefer_unhydrated=True" \
+                  --retries 5 \
+                  $FORMAT_ARGS \
+                  $PLAYLIST_ARGS \
+                  -o "$OUTPUT_FOLDER/%(uploader)s - %(title)s [%(id)s].$EXTENSION" \
+                  "$DOWNLOAD_URL"
+              }
+          fi
+
+      - name: Fix metadata for audio files (optional)
+        run: |
+          OUTPUT_FOLDER="${{ github.event.inputs.output_folder }}"
+          
+          # Use mutagen to fix common metadata issues
+          pip install mutagen
+          
+          python3 << 'EOF'
+          import os
+          from mutagen.mp3 import MP3
+          from mutagen.easyid3 import EasyID3
+          from mutagen.flac import FLAC
+          from mutagen.mp4 import MP4
+          
+          folder = "${{ github.event.inputs.output_folder }}"
+          
+          for filename in os.listdir(folder):
+              filepath = os.path.join(folder, filename)
+              
+              # Skip if not an audio file
+              if not any(filename.endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.opus']):
+                  continue
+                  
+              try:
+                  if filename.endswith('.mp3'):
+                      audio = MP3(filepath, ID3=EasyID3)
+                      # Ensure basic tags exist
+                      if 'title' not in audio:
+                          title = os.path.splitext(filename)[0]
+                          audio['title'] = title.split(' - ')[-1] if ' - ' in title else title
+                          audio.save()
+                  elif filename.endswith('.flac'):
+                      audio = FLAC(filepath)
+                      if not audio.get('title'):
+                          title = os.path.splitext(filename)[0]
+                          title = title.split(' - ')[-1] if ' - ' in title else title
+                          audio['title'] = title
+                          audio.save()
+                          
+              except Exception as e:
+                  print(f"Could not fix metadata for {filename}: {e}")
+          EOF
+
+      - name: Create download summary
+        run: |
+          OUTPUT_FOLDER="${{ github.event.inputs.output_folder }}"
+          echo "## Download Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Input Type:** ${{ github.event.inputs.input_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Output Format:** ${{ github.event.inputs.output_format }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Output Folder:** \`$OUTPUT_FOLDER\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Files:** $(find "$OUTPUT_FOLDER" -type f -name "*.mp3" -o -name "*.m4a" -o -name "*.flac" -o -name "*.opus" | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Downloaded Files:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -lh "$OUTPUT_FOLDER" | grep -E '\.(mp3|m4a|flac|opus)' | head -20 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # Show file size total
+          TOTAL_SIZE=$(du -sh "$OUTPUT_FOLDER" | cut -f1)
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Size:** $TOTAL_SIZE" >> $GITHUB_STEP_SUMMARY
+
+      - name: Push changes to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ github.event.inputs.output_folder }}/"
+          git commit -m "Download SoundCloud media [skip ci]" || echo "Nothing to commit"
+          git push
