@@ -1,0 +1,199 @@
+name: soundcloud search and save links
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_keyword:
+        description: 'کلمه مورد نظر برای جستجو در SoundCloud'
+        required: true
+        type: string
+        default: 'lofi hip hop'
+      
+      search_limit:
+        description: 'تعداد نتایج برای ذخیره لینک (حداکثر 50)'
+        required: false
+        type: number
+        default: 10
+      
+      include_metadata:
+        description: 'ذخیره اطلاعات اضافه (عنوان، آرتیست، مدت زمان)'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  search-and-save:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install yt-dlp
+        run: |
+          pip install -q -U yt-dlp
+
+      - name: Search SoundCloud and extract links
+        id: search
+        run: |
+          KEYWORD="${{ github.event.inputs.search_keyword }}"
+          LIMIT="${{ github.event.inputs.search_limit }}"
+          INCLUDE_META="${{ github.event.inputs.include_metadata }}"
+          
+          # ایجاد پوشه برای ذخیره لینک‌ها
+          mkdir -p links
+          
+          # تاریخ و زمان فعلی برای نام فایل
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          FILENAME="links/soundcloud_search_${TIMESTAMP}.txt"
+          JSON_FILENAME="links/soundcloud_search_${TIMESTAMP}.json"
+          
+          # جستجو در SoundCloud با استفاده از قابلیت scsearch
+          echo "🔍 در حال جستجو برای: $KEYWORD"
+          echo "📊 تعداد نتایج: $LIMIT"
+          echo ""
+          
+          # دریافت لینک‌ها با فرمت JSON
+          if [ "$INCLUDE_META" = "true" ]; then
+            # ذخیره با اطلاعات کامل
+            yt-dlp \
+              --quiet \
+              --no-warnings \
+              --flat-playlist \
+              --print "%(url)s" \
+              --print "%(title)s" \
+              --print "%(uploader)s" \
+              --print "%(duration)s" \
+              --print "%(view_count)s" \
+              --print "%(like_count)s" \
+              --playlist-end "$LIMIT" \
+              "scsearch${LIMIT}:${KEYWORD}" > temp_output.txt
+            
+            # ساخت فایل JSON با اطلاعات کامل
+            python3 << EOF
+            import json
+            import re
+            from datetime import datetime
+            
+            with open('temp_output.txt', 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+            
+            results = []
+            for i in range(0, len(lines), 6):
+                if i+5 < len(lines):
+                    track = {
+                        'index': len(results) + 1,
+                        'url': lines[i],
+                        'title': lines[i+1],
+                        'artist': lines[i+2],
+                        'duration_seconds': int(lines[i+3]) if lines[i+3].isdigit() else 0,
+                        'view_count': int(lines[i+4]) if lines[i+4].isdigit() else 0,
+                        'like_count': int(lines[i+5]) if lines[i+5].isdigit() else 0
+                    }
+                    # تبدیل ثانیه به فرمت mm:ss
+                    minutes = track['duration_seconds'] // 60
+                    seconds = track['duration_seconds'] % 60
+                    track['duration'] = f"{minutes}:{seconds:02d}"
+                    results.append(track)
+            
+            # ذخیره در فایل JSON
+            data = {
+                'search_keyword': '$KEYWORD',
+                'search_time': datetime.now().isoformat(),
+                'total_results': len(results),
+                'tracks': results
+            }
+            
+            with open('$JSON_FILENAME', 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            # ایجاد فایل متنی ساده با لینک‌ها
+            with open('$FILENAME', 'w', encoding='utf-8') as f:
+                f.write(f"SoundCloud Search Results\n")
+                f.write(f"Keyword: $KEYWORD\n")
+                f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Total: {len(results)} tracks\n")
+                f.write("="*60 + "\n\n")
+                
+                for track in results:
+                    f.write(f"[{track['index']}] {track['artist']} - {track['title']}\n")
+                    f.write(f"    Duration: {track['duration']} | Views: {track['view_count']:,}\n")
+                    f.write(f"    URL: {track['url']}\n\n")
+            
+            print(f"✅ ذخیره شد: {len(results)} ترک")
+            EOF
+          else
+            # فقط لینک‌ها (ساده)
+            yt-dlp \
+              --quiet \
+              --no-warnings \
+              --flat-playlist \
+              --print "%(url)s" \
+              --playlist-end "$LIMIT" \
+              "scsearch${LIMIT}:${KEYWORD}" > "$FILENAME"
+            
+            COUNT=$(wc -l < "$FILENAME")
+            echo "✅ ذخیره شد: $COUNT لینک"
+          fi
+          
+          # حذف فایل موقت
+          rm -f temp_output.txt
+          
+          # ذخیره نام فایل‌ها برای مرحله بعد
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          echo "json_filename=$JSON_FILENAME" >> $GITHUB_OUTPUT
+
+      - name: Create summary
+        run: |
+          FILENAME="${{ steps.search.outputs.filename }}"
+          JSON_FILENAME="${{ steps.search.outputs.json_filename }}"
+          
+          echo "## 📊 نتایج جستجوی SoundCloud" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**کلمه جستجو:** ${{ github.event.inputs.search_keyword }}" >> $GITHUB_STEP_SUMMARY
+          echo "**تعداد نتایج:** ${{ github.event.inputs.search_limit }}" >> $GITHUB_STEP_SUMMARY
+          echo "**زمان جستجو:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # نمایش لینک‌ها در summary
+          echo "### 🔗 لیست لینک‌های استخراج شده:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "$FILENAME" ]; then
+            if [[ "${{ github.event.inputs.include_metadata }}" == "true" ]]; then
+              # استخراج فقط لینک‌ها از فایل متنی
+              grep -E '^    URL: ' "$FILENAME" | sed 's/    URL: //' >> $GITHUB_STEP_SUMMARY
+            else
+              cat "$FILENAME" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # نمایش آمار
+          if [ -f "$JSON_FILENAME" ]; then
+            TOTAL=$(python3 -c "import json; print(json.load(open('$JSON_FILENAME'))['total_results'])")
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**📈 آمار:**" >> $GITHUB_STEP_SUMMARY
+            echo "- تعداد کل ترک‌ها: $TOTAL" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit and push links
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add links/
+          git commit -m "Add SoundCloud search results: ${{ github.event.inputs.search_keyword }} [skip ci]" || echo "Nothing to commit"
+          git push
+
+      - name: Upload links as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundcloud-links
+          path: links/
+          retention-days: 30
