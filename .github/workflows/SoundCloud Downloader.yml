@@ -1,0 +1,273 @@
+name: SoundCloud Downloader - No Login Required
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'SoundCloud URL (track, album, or playlist)'
+        required: true
+        type: string
+      output_folder:
+        description: 'Output folder name'
+        required: false
+        type: string
+        default: 'soundcloud_downloads'
+      audio_format:
+        description: 'Audio format (mp3, m4a, best, opus, wav)'
+        required: false
+        type: choice
+        default: 'mp3'
+        options:
+          - mp3
+          - m4a
+          - best
+          - opus
+          - wav
+      organize_by_artist:
+        description: 'Organize files in artist folders?'
+        required: false
+        type: boolean
+        default: true
+      zip_output:
+        description: 'Create a ZIP archive of all downloads?'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  download-soundcloud:
+    runs-on: ubuntu-latest
+    
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python --version
+          pip install --upgrade pip
+          pip install yt-dlp
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          echo "✅ yt-dlp version:"
+          yt-dlp --version
+          echo "✅ ffmpeg version:"
+          ffmpeg -version | head -1
+
+      - name: Download from SoundCloud
+        id: download
+        run: |
+          set -euo pipefail
+          
+          URL="${{ github.event.inputs.url }}"
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          AUDIO_FORMAT="${{ github.event.inputs.audio_format }}"
+          ORGANIZE_BY_ARTIST="${{ github.event.inputs.organize_by_artist }}"
+          
+          mkdir -p "$FOLDER"
+          
+          echo "========================================="
+          echo "📡 SoundCloud Downloader"
+          echo "========================================="
+          echo "🎵 URL: $URL"
+          echo "📁 Output folder: $FOLDER"
+          echo "🎚️ Audio format: $AUDIO_FORMAT"
+          echo "📂 Organize by artist: $ORGANIZE_BY_ARTIST"
+          echo "========================================="
+          
+          # Build output template based on organization preference
+          if [ "$ORGANIZE_BY_ARTIST" = "true" ]; then
+            # Organized: Artist/Title - Song.extension
+            OUTPUT_TEMPLATE="$FOLDER/%(artist)s/%(title)s - %(artist)s.%(ext)s"
+            echo "📂 Using artist-organized structure"
+          else
+            # Flat structure: just the song name
+            OUTPUT_TEMPLATE="$FOLDER/%(title)s - %(artist)s.%(ext)s"
+            echo "📂 Using flat structure (all files in one folder)"
+          fi
+          
+          # Build format options
+          if [ "$AUDIO_FORMAT" = "best" ]; then
+            FORMAT_OPTS="-f bestaudio"
+            echo "🎵 Downloading best available quality"
+          else
+            FORMAT_OPTS="-x --audio-format $AUDIO_FORMAT"
+            echo "🎵 Downloading and converting to $AUDIO_FORMAT"
+          fi
+          
+          # Execute download
+          echo ""
+          echo "🔄 Starting download..."
+          echo ""
+          
+          yt-dlp \
+            $FORMAT_OPTS \
+            --output "$OUTPUT_TEMPLATE" \
+            --retries 5 \
+            --fragment-retries 10 \
+            --no-check-certificate \
+            --geo-bypass \
+            --no-color \
+            --progress \
+            --no-overwrites \
+            --continue \
+            --extract-audio \
+            --embed-thumbnail \
+            --add-metadata \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "$URL"
+          
+          DOWNLOAD_EXIT_CODE=$?
+          
+          if [ $DOWNLOAD_EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "❌ Download failed with exit code: $DOWNLOAD_EXIT_CODE"
+            echo ""
+            echo "💡 TIPS:"
+            echo "   - Make sure the URL is public (no login required)"
+            echo "   - Some tracks may be age-restricted"
+            echo "   - Playlists with more than 50 tracks may be rate-limited"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ Download completed successfully!"
+          
+          # Count downloaded files
+          FILE_COUNT=$(find "$FOLDER" -type f \( -name "*.mp3" -o -name "*.m4a" -o -name "*.opus" -o -name "*.wav" \) 2>/dev/null | wc -l)
+          echo "📊 Downloaded files: $FILE_COUNT"
+          
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "download_path=$FOLDER" >> $GITHUB_OUTPUT
+          
+        shell: bash
+
+      - name: Create ZIP archive (optional)
+        if: github.event.inputs.zip_output == 'true'
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          ZIP_NAME="soundcloud_downloads_$(date +%Y%m%d_%H%M%S).zip"
+          
+          echo "📦 Creating ZIP archive: $ZIP_NAME"
+          zip -r "$ZIP_NAME" "$FOLDER/"
+          
+          echo "zip_file=$ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "✅ ZIP created: $ZIP_NAME"
+          
+        shell: bash
+
+      - name: List downloaded files
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          
+          echo "========================================="
+          echo "📁 Downloaded files:"
+          echo "========================================="
+          
+          if [ -d "$FOLDER" ]; then
+            find "$FOLDER" -type f | sort | while read -r file; do
+              SIZE=$(du -h "$file" | cut -f1)
+              echo "  ✓ $file ($SIZE)"
+            done
+            echo ""
+            echo "📊 Total size:"
+            du -sh "$FOLDER"
+          else
+            echo "⚠️ No files found in $FOLDER"
+          fi
+          
+        shell: bash
+
+      - name: Commit and push changes
+        run: |
+          set -euo pipefail
+          
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          
+          # Check if there are changes to commit
+          if [ -z "$(git status --porcelain "$FOLDER/")" ]; then
+            echo "ℹ️ No changes to commit in $FOLDER/"
+            exit 0
+          fi
+          
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Prepare commit message
+          COMMIT_MSG="Download from SoundCloud
+          
+          - URL: ${{ github.event.inputs.url }}
+          - Format: ${{ github.event.inputs.audio_format }}
+          - Files: ${{ steps.download.outputs.file_count }}
+          - Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - Run ID: ${{ github.run_id }}"
+          
+          # Add and commit
+          git add "$FOLDER/"
+          git commit -m "$COMMIT_MSG"
+          
+          # Push with retry
+          MAX_PUSH_RETRIES=3
+          PUSH_RETRY=0
+          PUSH_SUCCESS=false
+          
+          while [ $PUSH_RETRY -lt $MAX_PUSH_RETRIES ] && [ "$PUSH_SUCCESS" = false ]; do
+            if git pull --rebase origin ${{ github.ref_name }} 2>/dev/null; then
+              if git push origin ${{ github.ref_name }}; then
+                echo "✅ Successfully pushed to repository"
+                PUSH_SUCCESS=true
+                break
+              fi
+            fi
+            
+            PUSH_RETRY=$((PUSH_RETRY + 1))
+            if [ $PUSH_RETRY -lt $MAX_PUSH_RETRIES ]; then
+              echo "⚠️ Push failed, retrying in 5 seconds... (Attempt $PUSH_RETRY/$MAX_PUSH_RETRIES)"
+              sleep 5
+            fi
+          done
+          
+          if [ "$PUSH_SUCCESS" = false ]; then
+            echo "❌ Failed to push after $MAX_PUSH_RETRIES attempts"
+            exit 1
+          fi
+          
+        shell: bash
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 📊 SoundCloud Download Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **URL** | ${{ github.event.inputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Audio Format** | ${{ github.event.inputs.audio_format }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Files Downloaded** | ${{ steps.download.outputs.file_count }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Organized by Artist** | ${{ github.event.inputs.organize_by_artist }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **ZIP Created** | ${{ github.event.inputs.zip_output }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Authentication** | None (Anonymous) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔓 Notes" >> $GITHUB_STEP_SUMMARY
+          echo "- No login or API key required" >> $GITHUB_STEP_SUMMARY
+          echo "- Uses yt-dlp with ffmpeg for conversion" >> $GITHUB_STEP_SUMMARY
+          echo "- Rate limits: ~100 requests per 10 seconds [citation:8]" >> $GITHUB_STEP_SUMMARY
+          
+        shell: bash
