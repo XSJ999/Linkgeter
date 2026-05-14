@@ -1,0 +1,328 @@
+name: soundcloud-links-extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_type:
+        description: 'نوع جستجو'
+        required: true
+        type: choice
+        options:
+          - 'track'        # آهنگ
+          - 'artist'       # خواننده
+          - 'album'        # آلبوم
+          - 'playlist'     # پلی‌لیست
+        default: 'track'
+      search_query:
+        description: 'عبارت جستجو (نام خواننده/آلبوم/پلی‌لیست/آهنگ)'
+        required: true
+        type: string
+        default: 'lofi hip hop'
+      max_results:
+        description: 'تعداد نتایج برای استخراج (حداکثر ۱۰)'
+        required: false
+        type: number
+        default: 10
+      save_description:
+        description: 'ذخیره توضیحات هر آهنگ به صورت جداگانه'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  extract-links:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yt-dlp
+        run: |
+          pip install -q -U "yt-dlp[default]"
+
+      - name: Create links directory
+        run: |
+          mkdir -p links
+          
+          # تعریف متن نوع جستجو به فارسی
+          case "${{ github.event.inputs.search_type }}" in
+            "track") SEARCH_TYPE_FA="آهنگ" ;;
+            "artist") SEARCH_TYPE_FA="خواننده" ;;
+            "album") SEARCH_TYPE_FA="آلبوم" ;;
+            "playlist") SEARCH_TYPE_FA="پلی‌لیست" ;;
+            *) SEARCH_TYPE_FA="ناشناخته" ;;
+          esac
+          
+          cat > links/README.md << EOF
+          # SoundCloud Search Results
+          
+          **نوع جستجو:** ${SEARCH_TYPE_FA}
+          **عبارت جستجو:** ${{ github.event.inputs.search_query }}
+          **تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')
+          **تعداد نتایج:** ${{ github.event.inputs.max_results }}
+          
+          ## نتایج استخراج شده
+          
+          EOF
+
+      - name: Extract SoundCloud links
+        id: extract
+        run: |
+          SEARCH_TYPE="${{ github.event.inputs.search_type }}"
+          SEARCH_QUERY="${{ github.event.inputs.search_query }}"
+          MAX_RESULTS=${{ github.event.inputs.max_results }}
+          
+          # محدود کردن حداکثر به ۱۰ نتیجه
+          if [ "$MAX_RESULTS" -gt 10 ]; then
+            MAX_RESULTS=10
+            echo "⚠️ تعداد نتایج به ۱۰ محدود شد (حداکثر مجاز)"
+          fi
+          
+          # ساخت URL جستجو بر اساس نوع
+          case "$SEARCH_TYPE" in
+            "track")
+              SEARCH_URL="scsearch${MAX_RESULTS}:${SEARCH_QUERY}"
+              EXTRACTOR_ARGS="soundcloud:client_id=auto"
+              echo "🎵 جستجوی آهنگ‌ها برای: $SEARCH_QUERY"
+              ;;
+            "artist")
+              # جستجوی خواننده و سپس دریافت آهنگ‌های او
+              SEARCH_URL="scsearch${MAX_RESULTS}:artist:${SEARCH_QUERY}"
+              EXTRACTOR_ARGS="soundcloud:client_id=auto"
+              echo "🎤 جستجوی خواننده: $SEARCH_QUERY"
+              ;;
+            "album")
+              # جستجوی آلبوم
+              SEARCH_URL="scsearch${MAX_RESULTS}:album:${SEARCH_QUERY}"
+              EXTRACTOR_ARGS="soundcloud:client_id=auto"
+              echo "💿 جستجوی آلبوم: $SEARCH_QUERY"
+              ;;
+            "playlist")
+              # جستجوی پلی‌لیست
+              SEARCH_URL="scsearch${MAX_RESULTS}:playlist:${SEARCH_QUERY}"
+              EXTRACTOR_ARGS="soundcloud:client_id=auto"
+              echo "📋 جستجوی پلی‌لیست: $SEARCH_QUERY"
+              ;;
+            *)
+              echo "❌ نوع جستجوی نامعتبر: $SEARCH_TYPE"
+              exit 1
+              ;;
+          esac
+          
+          echo "🔄 در حال اجرای جستجو..."
+          echo "📊 حداکثر نتایج: $MAX_RESULTS"
+          
+          # استخراج اطلاعات
+          yt-dlp \
+            --flat-playlist \
+            --dump-json \
+            --ignore-errors \
+            --no-warnings \
+            --extractor-args "$EXTRACTOR_ARGS" \
+            "$SEARCH_URL" > results.json 2>/dev/null
+          
+          # بررسی وجود نتایج
+          if [ ! -s results.json ]; then
+            echo "❌ هیچ نتیجه‌ای یافت نشد. لطفاً عبارت جستجوی دیگری امتحان کنید."
+            exit 1
+          fi
+          
+          # پردازش نتایج
+          python3 << 'EOF'
+          import json
+          import re
+          import os
+          
+          search_type = os.environ.get('SEARCH_TYPE', 'track')
+          search_query = os.environ.get('SEARCH_QUERY', '')
+          
+          links_file = "links/soundcloud_links.txt"
+          urls_only_file = "links/urls_only.txt"
+          readme_file = "links/README.md"
+          
+          with open('results.json', 'r') as f:
+              content = f.read()
+          
+          lines = content.strip().split('\n')
+          
+          track_count = 0
+          links_list = []
+          
+          with open(links_file, 'w', encoding='utf-8') as links_out:
+              with open(urls_only_file, 'w', encoding='utf-8') as urls_out:
+                  # نوشتن هدر بر اساس نوع جستجو
+                  if search_type == 'artist':
+                      links_out.write(f"🎤 آهنگ‌های خواننده: {search_query}\n")
+                      links_out.write("=" * 50 + "\n\n")
+                  elif search_type == 'album':
+                      links_out.write(f"💿 آهنگ‌های آلبوم: {search_query}\n")
+                      links_out.write("=" * 50 + "\n\n")
+                  elif search_type == 'playlist':
+                      links_out.write(f"📋 آهنگ‌های پلی‌لیست: {search_query}\n")
+                      links_out.write("=" * 50 + "\n\n")
+                  else:
+                      links_out.write(f"🎵 نتایج جستجو: {search_query}\n")
+                      links_out.write("=" * 50 + "\n\n")
+                  
+                  for line in lines:
+                      if not line.strip():
+                          continue
+                      
+                      try:
+                          data = json.loads(line)
+                          
+                          track_url = data.get('webpage_url', data.get('url', ''))
+                          title = data.get('title', 'Unknown Title')
+                          uploader = data.get('uploader', 'Unknown Artist')
+                          duration = data.get('duration', 0)
+                          
+                          # تشخیص نوع محتوا
+                          webpage_url = data.get('webpage_url', '')
+                          content_type = "track"
+                          if '/sets/' in webpage_url:
+                              content_type = "playlist"
+                          elif '/albums/' in webpage_url:
+                              content_type = "album"
+                          
+                          if track_url and 'soundcloud.com' in track_url:
+                              track_count += 1
+                              
+                              try:
+                                  duration_int = int(float(duration)) if duration else 0
+                              except (ValueError, TypeError):
+                                  duration_int = 0
+                              
+                              if duration_int > 0:
+                                  minutes = duration_int // 60
+                                  seconds = duration_int % 60
+                                  duration_str = f"{minutes}:{seconds:02d}"
+                              else:
+                                  duration_str = "N/A"
+                              
+                              # نمایش نوع محتوا در خروجی
+                              type_icon = ""
+                              if content_type == "playlist":
+                                  type_icon = "📋 "
+                              elif content_type == "album":
+                                  type_icon = "💿 "
+                              else:
+                                  type_icon = "🎵 "
+                              
+                              links_out.write(f"{type_icon}[{track_count}] {uploader} - {title}\n")
+                              links_out.write(f"    URL: {track_url}\n")
+                              links_out.write(f"    Duration: {duration_str}\n")
+                              links_out.write(f"    Type: {content_type}\n\n")
+                              
+                              urls_out.write(f"{track_url}\n")
+                              
+                              links_list.append({
+                                  'url': track_url,
+                                  'title': title,
+                                  'artist': uploader,
+                                  'duration': duration_str,
+                                  'type': content_type
+                              })
+                              
+                      except json.JSONDecodeError:
+                          continue
+                      except Exception as e:
+                          print(f"⚠️ خطا در پردازش یک آیتم: {e}")
+                          continue
+          
+          # بروزرسانی README.md
+          with open(readme_file, 'a', encoding='utf-8') as f:
+              if links_list:
+                  f.write("\n| # | نوع | هنرمند | عنوان | مدت | لینک |\n")
+                  f.write("|---|-----|--------|-------|-----|------|\n")
+                  
+                  for i, track in enumerate(links_list, 1):
+                      type_emoji = "🎵" if track['type'] == "track" else "📋" if track['type'] == "playlist" else "💿"
+                      short_title = track['title'][:35] + "..." if len(track['title']) > 35 else track['title']
+                      short_artist = track['artist'][:25] + "..." if len(track['artist']) > 25 else track['artist']
+                      duration = track['duration']
+                      f.write(f"| {i} | {type_emoji} | {short_artist} | {short_title} | {duration} | [Listen]({track['url']}) |\n")
+              else:
+                  f.write("\n❌ **هیچ نتیجه‌ای یافت نشد**\n")
+          
+          # ذخیره JSON
+          with open('links/links_data.json', 'w', encoding='utf-8') as f:
+              json.dump({
+                  'search_type': search_type,
+                  'search_query': search_query,
+                  'total_results': track_count,
+                  'tracks': links_list
+              }, f, indent=2, ensure_ascii=False)
+          
+          print(f"✅ {track_count} نتیجه با موفقیت استخراج شد")
+          
+          with open('link_count.txt', 'w') as f:
+              f.write(str(track_count))
+          EOF
+          
+          LINK_COUNT=$(cat link_count.txt)
+          echo "link_count=$LINK_COUNT" >> $GITHUB_OUTPUT
+          
+          # ذخیره متغیرها برای مرحله بعد
+          echo "search_type=${{ github.event.inputs.search_type }}" >> $GITHUB_OUTPUT
+          echo "search_query=${{ github.event.inputs.search_query }}" >> $GITHUB_OUTPUT
+
+      - name: Generate summary with type info
+        run: |
+          LINK_COUNT="${{ steps.extract.outputs.link_count }}"
+          SEARCH_TYPE="${{ steps.extract.outputs.search_type }}"
+          SEARCH_QUERY="${{ steps.extract.outputs.search_query }}"
+          
+          # تبدیل نوع به فارسی
+          case "$SEARCH_TYPE" in
+            "track") TYPE_FA="🎵 آهنگ" ;;
+            "artist") TYPE_FA="🎤 خواننده" ;;
+            "album") TYPE_FA="💿 آلبوم" ;;
+            "playlist") TYPE_FA="📋 پلی‌لیست" ;;
+            *) TYPE_FA="❓ نامشخص" ;;
+          esac
+          
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🎵 SoundCloud Links Extractor
+          
+          | آیتم | مقدار |
+          |------|-------|
+          | **نوع جستجو** | ${TYPE_FA} |
+          | **عبارت جستجو** | ${SEARCH_QUERY} |
+          | **تعداد نتایج** | ${LINK_COUNT:-0} |
+          | **تاریخ اجرا** | $(date '+%Y-%m-%d %H:%M:%S') |
+          
+          ### 📁 فایل‌های ایجاد شده:
+          
+          - \`soundcloud_links.txt\` - لینک‌ها با جزئیات کامل
+          - \`urls_only.txt\` - فقط آدرس‌ها
+          - \`links_data.json\` - داده‌های ساختاریافته
+          - \`README.md\` - گزارش خوانا
+          EOF
+          
+          if [ "${{ github.event.inputs.save_description }}" = "true" ]; then
+            echo "- \`descriptions/\` - توضیحات هر آهنگ" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit and push links
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add links/
+          git commit -m "Extract ${{ github.event.inputs.search_type }}: ${{ github.event.inputs.search_query }} [skip ci]" || echo "Nothing to commit"
+          git push
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundcloud-links-${{ github.event.inputs.search_type }}-${{ github.run_number }}
+          path: links/
+          retention-days: 30
