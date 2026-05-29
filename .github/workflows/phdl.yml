@@ -1,0 +1,161 @@
+name: phdl
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL of the video'
+        required: true
+        type: string
+      output_folder:
+        description: 'Folder where the video will be saved'
+        required: false
+        type: string
+        default: 'downloads'
+      quality:
+        description: 'Video quality (yt-dlp format selector)'
+        required: true
+        type: string
+        default: 'bestvideo[height<=720]+bestaudio/best[ext=mp4]/best'
+      archive_name:
+        description: 'Base name for the RAR archive'
+        required: false
+        type: string
+        default: 'video'
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-maybe-split:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install yt-dlp
+          sudo apt-get update && sudo apt-get install -y bc rar
+
+      - name: Download video (with retry)
+        id: download
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          mkdir -p "$FOLDER"
+          touch "$FOLDER/.download_marker"
+
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          SUCCESS=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Download attempt $((RETRY_COUNT+1))/$MAX_RETRIES"
+
+            yt-dlp \
+              --output "./$FOLDER/%(uploader)s - %(title)s - %(id)s.%(ext)s" \
+              --format "${{ github.event.inputs.quality }}" \
+              --merge-output-format mp4 \
+              --retries 5 \
+              --fragment-retries 10 \
+              --no-check-certificate \
+              --geo-bypass \
+              --ignore-errors \
+              --newline \
+              "${{ github.event.inputs.url }}" && {
+                # پیدا کردن فایل دانلود شده (بهترین روش)
+                NEW_FILE=$(find "$FOLDER" -type f \( -name "*.mp4" -o -name "*.webm" -o -name "*.mkv" \) -newer "$FOLDER/.download_marker" | head -n 1)
+                
+                if [ -n "$NEW_FILE" ] && [ -s "$NEW_FILE" ]; then
+                  echo "Download succeeded: $NEW_FILE"
+                  echo "filename=$(basename "$NEW_FILE")" >> $GITHUB_OUTPUT
+                  echo "filepath=$NEW_FILE" >> $GITHUB_OUTPUT
+                  echo "size_bytes=$(stat -c %s "$NEW_FILE")" >> $GITHUB_OUTPUT
+                  SUCCESS=true
+                  break
+                else
+                  echo "Command succeeded but no valid file found. Retrying..."
+                fi
+              } || {
+                echo "Download attempt failed with exit code $?"
+              }
+
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              sleep 8
+            fi
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "❌ All download attempts failed."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Split large file (if > 99 MB)
+        id: split
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          FILENAME="${{ steps.download.outputs.filename }}"
+          FILEPATH="${{ steps.download.outputs.filepath }}"
+          SIZE_BYTES="${{ steps.download.outputs.size_bytes }}"
+          
+          if [ -z "$FILENAME" ] || [ ! -f "$FILEPATH" ]; then
+            echo "❌ Downloaded file not found!"
+            exit 1
+          fi
+
+          SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
+          THRESHOLD_MB=99
+
+          echo "File size: ${SIZE_MB} MB"
+
+          cd "$FOLDER"
+
+          if (( $(echo "$SIZE_MB > $THRESHOLD_MB" | bc -l) )); then
+            echo "🔄 Splitting file into 95MB parts..."
+
+            RANDOM_HEX=$(openssl rand -hex 3)
+            ARCHIVE_BASE="\( {{ github.event.inputs.archive_name }}_ \){RANDOM_HEX}"
+            
+            rar a -v95m -m5 -ep1 "${ARCHIVE_BASE}.rar" "$FILENAME" && {
+              echo "✅ Split completed successfully."
+              rm "$FILENAME"  # حذف فایل اصلی بعد از موفقیت
+              echo "split_done=true" >> $GITHUB_OUTPUT
+              echo "archive_base=$ARCHIVE_BASE" >> $GITHUB_OUTPUT
+            } || {
+              echo "❌ RAR splitting failed!"
+              exit 1
+            }
+          else
+            echo "✅ File size is acceptable. No splitting needed."
+            echo "split_done=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Commit and Push changes
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add "$FOLDER/"
+          
+          # فقط اگر تغییری وجود داشته باشد commit کن
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Add downloaded video: ${{ steps.download.outputs.filename }}"
+            
+            # Push امن با توکن
+            git push https://\( {{ github.actor }}: \){{ secrets.GITHUB_TOKEN }}@github.com/\( {{ github.repository }}.git HEAD: \){GITHUB_REF_NAME}
+            echo "✅ Successfully pushed to repository."
+          fi
+        shell: bash
